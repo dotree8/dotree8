@@ -1,154 +1,132 @@
 #!/usr/bin/env bash
-# dotree8 — XRAY VLESS-REALITY 全自动安装脚本（修正版）
-# 适用：Ubuntu 20.04 / 22.04 / 24.04
-# 说明：本脚本为“无交互全自动”版，运行前建议先在 VPS 做快照
-# 版本：v1.1 (修正版：增加校验/备份/jq/json 安全修改/网卡自动识别)
+# dotree8 — XRAY VLESS-REALITY 一键安装与优化脚本 v1.2
+# 说明: 完全自动 / 无交互 / 适配 Ubuntu 20.04, 22.04, 24.04
+# 建议: 运行前为 VPS 做快照 (snapshot)
 set -euo pipefail
 IFS=$'\n\t'
 
-LOG_PREFIX="[dotree8]"
+LOG_PREFIX="[dotree8:v1.2]"
 
-echo "$LOG_PREFIX 启动脚本..."
+timestamp(){ date +%F_%H%M%S; }
 
-# ---------------------------
-# 简单工具函数
-# ---------------------------
-timestamp() { date +%F_%H%M%S; }
-
-fail_exit() {
-    echo "$LOG_PREFIX 错误：$1"
-    exit 1
+# 错误退出
+fail_exit(){
+  echo "$LOG_PREFIX 错误: $1"
+  exit 1
 }
 
-# ---------------------------
-# 1) root 检查
-# ---------------------------
+# 日志信息
+info(){ echo "$LOG_PREFIX $*"; }
+
+# trap - 在错误时输出最后 100 行日志便于排查
+trap 'echo "$LOG_PREFIX 脚本意外退出，最后 80 行 xray 日志："; journalctl -u xray -n 80 --no-pager || true' ERR
+
+# 1) 必须以 root 运行
 if [ "$(id -u)" -ne 0 ]; then
-    fail_exit "请以 root 用户运行本脚本（sudo -i），脚本已退出。"
+  fail_exit "请以 root 用户运行本脚本 (sudo -i)"
 fi
 
-# ---------------------------
-# 2) 系统版本检测
-# ---------------------------
+# 2) 检查 /etc/os-release
 if [ ! -f /etc/os-release ]; then
-    fail_exit "/etc/os-release 不存在，无法判断系统。"
+  fail_exit "/etc/os-release 不存在，无法判断系统"
 fi
 . /etc/os-release
-if [[ "$ID" != "ubuntu" ]]; then
-    fail_exit "本脚本仅支持 Ubuntu，检测到：$ID"
+if [ "$ID" != "ubuntu" ]; then
+  fail_exit "本脚本仅支持 Ubuntu，检测到: $ID"
 fi
 if [[ "$VERSION_ID" != "20.04" && "$VERSION_ID" != "22.04" && "$VERSION_ID" != "24.04" ]]; then
-    fail_exit "当前 Ubuntu 版本 $VERSION_ID 未列为支持版本 (20.04/22.04/24.04)。若确认兼容，可手动修改脚本后再运行。"
+  fail_exit "当前 Ubuntu 版本 $VERSION_ID 未在支持列表 (20.04/22.04/24.04) 中"
 fi
-echo "$LOG_PREFIX 系统检测通过：Ubuntu $VERSION_ID"
+info "系统检测通过: Ubuntu $VERSION_ID"
 
-# ---------------------------
-# 3) 更新并安装基础依赖（无交互）
-# ---------------------------
+# 3) 基础依赖 (noninteractive)
 export DEBIAN_FRONTEND=noninteractive
+info "apt update && 安装基础依赖 (curl jq openssl iproute2 iputils-ping)..."
 apt update -y
-apt install -y curl ca-certificates wget gnupg lsb-release jq iproute2 iputils-ping
+apt install -y curl ca-certificates wget gnupg lsb-release jq openssl iproute2 iputils-ping net-tools || true
 
-# ---------------------------
-# 4) 检测主出口网卡（若未检测到，使用 eth0 作为回退）
-# ---------------------------
-DEV=$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}')
+# 4) 检测默认出口网卡 (回退 eth0)
+DEV=$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}' || true)
 if [ -z "$DEV" ]; then
-    DEV="eth0"
-    echo "$LOG_PREFIX 未检测到默认网卡，使用回退网卡：$DEV"
+  DEV="eth0"
+  info "未检测到默认网卡，使用回退: $DEV"
 else
-    echo "$LOG_PREFIX 检测到默认出口网卡：$DEV"
+  info "检测到默认网卡: $DEV"
 fi
 
-# ---------------------------
-# 5) 备份关键文件（如果存在）
-# ---------------------------
 TS=$(timestamp)
-backup_file() {
-    local f="$1"
-    if [ -f "$f" ]; then
-        cp -a "$f" "${f}.bak.$TS"
-        echo "$LOG_PREFIX 备份 $f -> ${f}.bak.$TS"
-    fi
-}
-backup_file /etc/sysctl.conf
-backup_file /etc/security/limits.conf
-backup_file /usr/local/etc/xray/config.json || true
 
-# ---------------------------
-# 6) DNS use-vc 设置（谨慎追加）
-# ---------------------------
+# 5) 备份关键文件（存在则备份）
+backup_if_exists(){
+  local f="$1"
+  if [ -f "$f" ]; then
+    cp -a "$f" "${f}.bak.$TS"
+    info "备份 $f -> ${f}.bak.$TS"
+  fi
+}
+backup_if_exists /etc/sysctl.conf
+backup_if_exists /etc/security/limits.conf
+backup_if_exists /usr/local/etc/xray/config.json
+
+# 6) DNS 修复 options use-vc（避免 DNS UDP 问题）
 if ! grep -q "options use-vc" /etc/resolv.conf 2>/dev/null; then
-    echo "options use-vc" >> /etc/resolv.conf
-    echo "$LOG_PREFIX 已追加 options use-vc 到 /etc/resolv.conf"
+  echo "options use-vc" >> /etc/resolv.conf
+  info "已追加 options use-vc 到 /etc/resolv.conf"
 fi
 
-# ---------------------------
-# 7) 安装 Reality（yahuisme 官方脚本）
-# ---------------------------
-echo "$LOG_PREFIX 正在下载安装并执行 yahuisme 的 Reality 安装脚本..."
-bash <(curl -fsSL https://raw.githubusercontent.com/yahuisme/xray-vless-reality/main/install.sh) || fail_exit "yahuisme 安装脚本执行失败"
+# 7) 下载并执行 yahuisme 的 Reality 安装脚本（官方常用）
+info "下载并执行 yahuisme xray-vless-reality 安装脚本..."
+bash <(curl -fsSL https://raw.githubusercontent.com/yahuisme/xray-vless-reality/main/install.sh) || fail_exit "yahuisme 安装脚本失败"
 
-# 等待服务稳定
 sleep 2
 
-# ---------------------------
-# 8) 检查 xray 服务是否运行并监听 443
-# ---------------------------
+# 8) 确认 xray 已启动
 if ! systemctl is-active --quiet xray; then
-    journalctl -u xray --no-pager -n 80 || true
-    fail_exit "xray 服务未启动，请检查安装日志。"
+  info "xray 未处于 active 状态，显示 journal 最后 120 行供排查："
+  journalctl -u xray -n 120 --no-pager || true
+  fail_exit "xray 未成功启动"
 fi
-# 检查 443 端口是否被 xray 监听（或已绑定）
-if ! ss -ntlp 2>/dev/null | grep -E ':443\b' >/dev/null 2>&1; then
-    echo "$LOG_PREFIX 警告：未检测到 443 端口被监听。请检查 xray 是否绑定到 443。继续执行但请注意。"
+info "xray 服务已启动"
+
+# 检查 443 是否被监听
+if ss -ntlp 2>/dev/null | grep -E ':443\b' >/dev/null 2>&1; then
+  info "检测到 443 端口已监听"
 else
-    echo "$LOG_PREFIX 检测到 443 端口已监听。"
+  info "警告: 未检测到 443 端口被监听，伪装/回源可能失败，请检查 xray 配置"
 fi
 
-# ---------------------------
-# 9) 启用 BBR（teddysun 脚本，选择 2）
-# ---------------------------
-echo "$LOG_PREFIX 启用 BBR..."
-bash <(curl -fsSL https://raw.githubusercontent.com/teddysun/across/master/bbr.sh) <<< "2" || echo "$LOG_PREFIX 启用 BBR 可能已存在或脚本返回非零，继续..."
+# 9) 启用 BBR (teddysun 脚本，选项 2)
+info "启用 BBR (teddysun脚本) ..."
+bash <(curl -fsSL https://raw.githubusercontent.com/teddysun/across/master/bbr.sh) <<< "2" || info "启用 BBR 脚本返回非 0，但继续"
 
-# ---------------------------
-# 10) 安装并配置 UFW（谨慎，保留现有规则备份）
-# ---------------------------
+# 10) 配置 UFW（保留备份）
+info "安装并配置 UFW..."
 apt install -y ufw || true
-# 备份现有规则（如果有）
-ufw status numbered >/dev/null 2>&1 && ufw status verbose > "/root/ufw_status_$TS.txt" || true
-
-# set policy
+ufw status verbose > "/root/ufw_status_$TS.txt" 2>/dev/null || true
 ufw default deny incoming || true
 ufw default allow outgoing || true
-# 保留 SSH (22)，HTTPs (443)
 ufw allow 22/tcp || true
 ufw allow 443/tcp || true
 ufw --force enable || true
-echo "$LOG_PREFIX UFW 已配置（允许 22 / 443）"
+info "UFW 已配置 (允许 22,443)"
 
-# ---------------------------
-# 11) 文件句柄优化（limits.conf）
-# ---------------------------
+# 11) 文件句柄优化 limits.conf（覆盖写入）
 cat > /etc/security/limits.conf <<'EOF'
 * soft nofile 512000
 * hard nofile 512000
 root soft nofile 512000
 root hard nofile 512000
 EOF
-echo "$LOG_PREFIX 已写入 /etc/security/limits.conf"
+info "已写入 /etc/security/limits.conf"
 
-# ---------------------------
-# 12) sysctl 优化（使用标记块，避免重复追加）
-# ---------------------------
+# 12) sysctl 优化：使用标记块，避免重复追加
 START_TAG="# >>> dotree8 sysctl start"
 END_TAG="# <<< dotree8 sysctl end"
-# 移除旧的 dotree8 块（如果存在）
+
+# 删除旧块（如果存在）
 if grep -qF "$START_TAG" /etc/sysctl.conf 2>/dev/null; then
-    awk -v s="$START_TAG" -v e="$END_TAG" 'BEGIN{del=0} { if(index($0,s)) {del=1; next} if(index($0,e)) {del=0; next} if(!del) print }' /etc/sysctl.conf > /tmp/sysctl.clean.$TS
-    mv /tmp/sysctl.clean.$TS /etc/sysctl.conf
-    echo "$LOG_PREFIX 移除旧的 sysctl dotree8 配置块"
+  awk -v s="$START_TAG" -v e="$END_TAG" 'BEGIN{del=0} { if(index($0,s)) {del=1; next} if(index($0,e)) {del=0; next} if(!del) print }' /etc/sysctl.conf > /tmp/sysctl.clean.$$ && mv /tmp/sysctl.clean.$$ /etc/sysctl.conf
+  info "移除旧的 dotree8 sysctl 块"
 fi
 
 cat >> /etc/sysctl.conf <<'EOF'
@@ -172,108 +150,109 @@ net.ipv6.conf.default.accept_ra = 0
 
 EOF
 
-sysctl -p || echo "$LOG_PREFIX sysctl -p 出现问题，但继续。"
+sysctl -p || info "sysctl -p 报错，但继续执行"
 
-# ---------------------------
-# 13) 安装 net-tools (用于 netstat) 并 jq（用于修改 JSON）
-# ---------------------------
-apt install -y net-tools openssl jq || true
+# 13) 安装 openssl jq net-tools（如果缺失）
+apt install -y openssl jq net-tools || true
 
-# ---------------------------
-# 14) 安全地修改 config.json：生成 shortId（使用 jq）
-# ---------------------------
+# 14) 安全修改 xray config.json 的 shortIds（使用 jq；兼容多 inbound）
 CONFIG="/usr/local/etc/xray/config.json"
 if [ ! -f "$CONFIG" ]; then
-    echo "$LOG_PREFIX 警告：配置文件 $CONFIG 不存在，跳过 shortId 修改。"
+  info "配置文件 $CONFIG 不存在，跳过 shortId 更新"
 else
-    # 备份已在上面完成
-    NEW_SID=$(openssl rand -hex 4)
-    # 如果 shortIds 存在，替换；否则插入到 root 位置（尽量保证兼容）
-    if jq -e '.inbounds[0].streamSettings.reality' "$CONFIG" >/dev/null 2>&1; then
-        # 使用 jq 更新 .inbounds[0].streamSettings.reality.shortIds = [NEW_SID]
-        TMP=$(mktemp)
-        jq --arg sid "$NEW_SID" '( .inbounds ) |= ( . as $arr | ( range(0;($arr|length)) | select( (.[$_] .streamSettings? .reality?) ) ) as $i | .[$i].streamSettings.reality.shortIds = [$sid] )' "$CONFIG" > "$TMP" 2>/dev/null || true
-        # fallback: if tmp is empty, try a simpler assignment at top-level reality key
-        if [ -s "$TMP" ]; then
-            mv "$TMP" "$CONFIG"
-            echo "$LOG_PREFIX 已用 jq 写入 shortId: $NEW_SID"
-        else
-            rm -f "$TMP"
-            echo "$LOG_PREFIX jq 更新 shortId 失败，尝试 sed 回退..."
-            sed -i "s/\"shortIds\": \[.*/\"shortIds\": [\"$NEW_SID\"],/g" "$CONFIG" || true
-        fi
-    else
-        # 如果没找到预期的 reality 结构，尝试全局替换或直接告知
-        echo "$LOG_PREFIX 未能检测到 standard reality 结构，尝试用 sed 更新 shortIds"
-        sed -i "s/\"shortIds\": \[.*/\"shortIds\": [\"$NEW_SID\"],/g" "$CONFIG" || true
-    fi
+  NEW_SID=$(openssl rand -hex 4)
+  info "准备写入 shortId: $NEW_SID"
 
-    systemctl restart xray || echo "$LOG_PREFIX 重启 xray 出现问题，但继续。"
+  TMPFILE=$(mktemp)
+  # 对每个包含 streamSettings.reality 的 inbound 节点，设置 shortIds
+  if jq -e '.[].streamSettings? | select(.reality != null)' "$CONFIG" >/dev/null 2>&1; then
+    if jq --arg sid "$NEW_SID" '(.inbounds[] | select(.streamSettings?.reality?) ) |= (.streamSettings.reality.shortIds = [$sid])' "$CONFIG" > "$TMPFILE" 2>/dev/null; then
+      mv "$TMPFILE" "$CONFIG"
+      info "jq 已写入 shortId: $NEW_SID"
+    else
+      rm -f "$TMPFILE"
+      info "jq 更新 shortId 失败，尝试 sed 回退方式"
+      sed -i "s/\"shortIds\": \[.*/\"shortIds\": [\"$NEW_SID\"],/g" "$CONFIG" || info "sed 替换 shortIds 也失败"
+    fi
+  else
+    # config 中没有 streamSettings.reality 结构（非标准或布局不同），尝试用 sed 替换
+    sed -i "s/\"shortIds\": \[.*/\"shortIds\": [\"$NEW_SID\"],/g" "$CONFIG" || info "未能设置 shortIds（config 布局异常）"
+  fi
+
+  # 重启 xray 以应用 shortId
+  if systemctl restart xray; then
+    info "xray 已重启，shortId 可能已生效"
+  else
+    info "重启 xray 失败，请手动检查 xray 状态"
+  fi
 fi
 
-# ---------------------------
-# 15) MTU 自动检测（使用检测到的 DEV）
-# ---------------------------
-echo "$LOG_PREFIX 正在探测最佳 MTU (1200..1500)，请耐心..."
+# 15) 自动探测 MTU（1200..1500），使用检测到的网卡 DEV
+info "开始自动检测最佳 MTU (1200..1500) ..."
 best=0
 for mtu in $(seq 1500 -1 1200); do
-    if ping -c1 -W1 -s $((mtu - 28)) -M do 8.8.8.8 >/dev/null 2>&1; then
-        best=$mtu
-        break
-    fi
+  if ping -c1 -W1 -s $((mtu - 28)) -M do 8.8.8.8 >/dev/null 2>&1; then
+    best=$mtu
+    break
+  fi
 done
 if [ "$best" -eq 0 ]; then
-    best=1400
-    echo "$LOG_PREFIX 未能探测到更高 MTU，使用安全默认：$best"
+  best=1400
+  info "未探测到更高 MTU，使用默认安全值 $best"
 else
-    echo "$LOG_PREFIX 检测到最佳 MTU：$best"
+  info "检测到最佳 MTU: $best"
 fi
-ip link set mtu "$best" dev "$DEV" || echo "$LOG_PREFIX 设置 MTU 失败（请检查网卡名 $DEV）"
 
-# ---------------------------
-# 16) 从 config.json 安全提取 UUID / publicKey / serverName (SNI)
-# ---------------------------
+if ip link set mtu "$best" dev "$DEV" 2>/dev/null; then
+  info "已将 $DEV 的 MTU 设置为 $best"
+else
+  info "设置 MTU 失败 (设备 $DEV)，请手动检查"
+fi
+
+# 16) 提取 UUID / publicKey / serverName (兼容 serverName 或 serverNames)
 UUID=""
 PUB_KEY=""
 SNI=""
+
 if [ -f "$CONFIG" ]; then
-    # 尝试使用 jq 提取常见字段（兼容多种 config 布局）
-    UUID=$(jq -r '(.inbounds[]?.settings?.clients[]?.id // .inbounds[0].settings.clients[0].id) // empty' "$CONFIG" 2>/dev/null || true)
-    PUB_KEY=$(jq -r '(.inbounds[]?.streamSettings?.reality?.publicKey // .inbounds[0].streamSettings.reality.publicKey) // empty' "$CONFIG" 2>/dev/null || true)
-    SNI=$(jq -r '(.inbounds[]?.streamSettings?.reality?.serverNames[0] // .inbounds[0].streamSettings.reality.serverNames[0]) // empty' "$CONFIG" 2>/dev/null || true)
+  # 尝试使用 jq 提取
+  UUID=$(jq -r '(.inbounds[]?.settings?.clients[]?.id // .inbounds[0].settings.clients[0].id) // empty' "$CONFIG" 2>/dev/null || true)
+  PUB_KEY=$(jq -r '(.inbounds[]?.streamSettings?.reality?.publicKey // .inbounds[0].streamSettings.reality.publicKey) // empty' "$CONFIG" 2>/dev/null || true)
+
+  # 兼容 serverNames (数组) 或 serverName (字符串)
+  SNI=$(jq -r '(.inbounds[]?.streamSettings?.reality?.serverNames[0] // .inbounds[]?.streamSettings?.reality?.serverName // .inbounds[0].streamSettings.reality.serverNames[0] // .inbounds[0].streamSettings.reality.serverName) // empty' "$CONFIG" 2>/dev/null || true)
 fi
 
-# 兼容性回退：用 grep 解析（如果 jq 未能取到）
+# 回退 grep 提取（以防 jq 未能覆盖）
 if [ -z "$UUID" ] && [ -f "$CONFIG" ]; then
-    UUID=$(grep -oP '(?<="id":\s*")[^"]+' "$CONFIG" | head -n1 || true)
+  UUID=$(grep -oP '(?<="id":\s*")[^"]+' "$CONFIG" | head -n1 || true)
 fi
 if [ -z "$PUB_KEY" ] && [ -f "$CONFIG" ]; then
-    PUB_KEY=$(grep -oP '(?<="publicKey":\s*")[^"]+' "$CONFIG" | head -n1 || true)
+  PUB_KEY=$(grep -oP '(?<="publicKey":\s*")[^"]+' "$CONFIG" | head -n1 || true)
 fi
 if [ -z "$SNI" ] && [ -f "$CONFIG" ]; then
+  SNI=$(grep -oP '(?<="serverName":\s*")[^"]+' "$CONFIG" | head -n1 || true)
+  if [ -z "$SNI" ]; then
     SNI=$(grep -oP '(?<="serverNames":\s*\[\s*")[^"]+' "$CONFIG" | head -n1 || true)
+  fi
 fi
 
-# ---------------------------
-# 17) 生成 VLESS Reality 链接（尽量填充可用字段）
-# ---------------------------
+# 17) 生成 VLESS-Reality 链接 (尽量填充 pbk, sid, sni)
 if [ -n "$UUID" ] && [ -n "$PUB_KEY" ] && [ -n "$SNI" ]; then
-    LINK="vless://${UUID}@${SNI}:443?encryption=none&security=reality&sni=${SNI}&pbk=${PUB_KEY}&sid=${NEW_SID}&fp=chrome#dotree8"
+  VLESS_LINK="vless://${UUID}@${SNI}:443?encryption=none&security=reality&sni=${SNI}&pbk=${PUB_KEY}&sid=${NEW_SID}&fp=chrome#dotree8"
 else
-    LINK=""
+  VLESS_LINK=""
 fi
 
-# ---------------------------
-# 18) 输出最终状态与信息
-# ---------------------------
+# 18) 最终输出
 echo
 echo "============================================"
-echo "  dotree8: Reality 安装/优化 完成"
+echo " dotree8: Reality 安装/优化 完成 (v1.2)"
 echo "============================================"
 echo " 系统: Ubuntu $VERSION_ID"
 echo " 默认网卡: $DEV"
 echo " MTU: $best"
-echo " xray 服务状态: $(systemctl is-active xray || echo 'unknown')"
+echo " xray 服务: $(systemctl is-active xray || echo 'unknown')"
 echo " 443 监听: $(ss -ntlp 2>/dev/null | grep -E ':443\b' >/dev/null && echo '已监听' || echo '未检测到')"
 echo
 echo " 配置文件: $CONFIG"
@@ -283,12 +262,12 @@ echo
 [ -n "$PUB_KEY" ] && echo " PublicKey: $PUB_KEY"
 [ -n "$NEW_SID" ] && echo " shortId: $NEW_SID"
 echo
-if [ -n "$LINK" ]; then
-    echo " 客户端链接 (复制)："
-    echo "$LINK"
+if [ -n "$VLESS_LINK" ]; then
+  echo " 客户端链接 (复制)："
+  echo "$VLESS_LINK"
 else
-    echo " 未能自动生成完整的 VLESS-Reality 链接。请打开 $CONFIG 查看 publicKey / id / serverNames 并手动组装。"
+  echo " 未能自动生成完整 VLESS-Reality 链接。请打开 $CONFIG 手动查看 publicKey / id / serverNames 并组装。"
 fi
 echo
 echo "============================================"
-echo "$LOG_PREFIX 完成。如需帮助请把上述输出贴给我。"
+info "完成。如需帮助请把上述输出贴给我。"
