@@ -8,12 +8,6 @@
 # 🌈 Xray VLESS-Reality 一键安装脚本  
 ### 高稳定性 · 自动优化 · 自动检测 MTU · 自动生成订阅链接
 
-![License](https://img.shields.io/badge/license-MIT-green)
-![System](https://img.shields.io/badge/Ubuntu-20.04%20|%2022.04%20|%2024.04-blue)
-![Shell](https://img.shields.io/badge/shell-bash-orange)
-![Reality](https://img.shields.io/badge/Xray-Reality-red)
-![Status](https://img.shields.io/badge/Release-stable-success)
-
 </div>
 
 ---
