@@ -1,4 +1,4 @@
-dotree8 - VLESS Reality 全自动一键安装脚本
+📌 dotree8 - VLESS Reality 全自动一键安装脚本
 适用于：
 ✔ Ubuntu 20.04 / 22.04 / 24.04
 ✔ 干净 IP，无需域名
@@ -14,8 +14,7 @@ dotree8 - VLESS Reality 全自动一键安装脚本
 • 可直接复制运行
 ---
 🚀 一键安装命令
-
-【bash <(curl -L https://raw.githubusercontent.com/dotree8/dotree8/main/install.sh)】
+bash <(curl -L https://raw.githubusercontent.com/dotree8/dotree8/main/install.sh)
 ---
 📦 功能清单
 功能
@@ -50,16 +49,14 @@ Reality 回源伪装检查
 
 ---
 📜 安装后检查命令
-
 查看服务状态：
-【systemctl status xray --no-pager】
-
+systemctl status xray --no-pager
 查看配置：
-【cat /usr/local/etc/xray/config.json】
-
-修改 shortId（可选）
-【nano /usr/local/etc/xray/config.json】
-【systemctl restart xray】
+cat /usr/local/etc/xray/config.json
 ---
-完成！
-
+🛠 修改 shortId（可选）
+nano /usr/local/etc/xray/config.json
+systemctl restart xray
+---
+🎉 完成！
+你的 Reality 节点已经优化 + 完成部署，可直接使用。
