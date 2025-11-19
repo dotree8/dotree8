@@ -2,13 +2,10 @@
 
 ---
 
-````markdown
-<div align="center">
+````
 
 # 🌈 Xray VLESS-Reality 一键安装脚本  
 ### 高稳定性 · 自动优化 · 自动检测 MTU · 自动生成订阅链接
-
-</div>
 
 ---
 
