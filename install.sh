@@ -1,44 +1,88 @@
 #!/bin/bash
-# ================================
-#  XRAY VLESS-REALITY 一键脚本
-#  Author: dotree8 (Optimized by ChatGPT)
-#  System: Ubuntu 20/22/24
-# ================================
+# 完全自动安装 Reality（无交互）for Ubuntu 20/22/24
+# 版本：v1.0-stable
 
 set -e
 
-echo "==============================="
-echo "   VLESS-Reality 一键安装脚本"
-echo "==============================="
+echo "========================================"
+echo " 🚀 Reality (VLESS-Reality) 自动安装脚本"
+echo "    * 自动安装 * 自动优化 * 自动伪装 "
+echo "    * Ubuntu 20/22/24 支持 "
+echo "    * 作者: dotree8 (本脚本自动生成)"
+echo "========================================"
+sleep 1
 
-# -------------------------------
-# 0. DNS use-vc
-# -------------------------------
-echo "[1/10] 设置 DNS use-vc..."
-grep -q "options use-vc" /etc/resolv.conf || echo "options use-vc" | sudo tee -a /etc/resolv.conf > /dev/null
+# ---------------------------
+# 0. root 权限检查
+# ---------------------------
+if [ "$(id -u)" != "0" ]; then
+    echo "❌ 请输入 root 用户运行：sudo -i"
+    exit 1
+fi
 
-# -------------------------------
-# 1. 安装 Reality（yahuisme 官方）
-# -------------------------------
-echo "[2/10] 安装 XRAY Reality..."
+# ---------------------------
+# 1. 系统版本检查
+# ---------------------------
+. /etc/os-release
+if [[ "$VERSION_ID" != "20.04" && "$VERSION_ID" != "22.04" && "$VERSION_ID" != "24.04" ]]; then
+    echo "❌ 当前系统为 $VERSION_ID，不在支持范围 (20/22/24)"
+    exit 1
+fi
+echo "✔ 系统版本检测成功：Ubuntu $VERSION_ID"
+
+# ---------------------------
+# 2. 检测主网卡（你提供的是 eth0，因此优先使用 eth0）
+# ---------------------------
+DEV=$(ip route | grep default | awk '{print $5}')
+[ -z "$DEV" ] && DEV="eth0"
+
+echo "✔ 检测到网卡：$DEV"
+
+# ---------------------------
+# 3. DNS use-vc 修复
+# ---------------------------
+if ! grep -q "options use-vc" /etc/resolv.conf; then
+    echo "options use-vc" >> /etc/resolv.conf
+fi
+echo "✔ DNS use-vc 已设置"
+
+# ---------------------------
+# 4. 安装 Reality（官方 yahuisme）
+# ---------------------------
+echo "🚀 正在安装 Reality..."
 bash <(curl -L https://raw.githubusercontent.com/yahuisme/xray-vless-reality/main/install.sh)
 
-# -------------------------------
-# 2. 启用 BBR3
-# -------------------------------
-echo "[3/10] 启用 BBR3..."
+sleep 1
+
+# ---------------------------
+# 5. 检查安装是否成功
+# ---------------------------
+if ! systemctl is-active --quiet xray; then
+    echo "❌ Xray 未能成功启动，请检查错误"
+    exit 1
+fi
+
+echo "✔ Reality 安装成功"
+
+CONFIG="/usr/local/etc/xray/config.json"
+
+# 自动提取 UUID、公钥、shortId
+UUID=$(grep -oP '(?<="id": ")[^"]+' $CONFIG | head -n1)
+PUB_KEY=$(grep -oP '(?<="publicKey": ")[^"]+' $CONFIG)
+SNI=$(grep -oP '(?<="serverNames": \[")[^"]+' $CONFIG)
+
+# ---------------------------
+# 6. 启用 BBR3（teddysun 官方脚本）
+# ---------------------------
+echo "🚀 正在启用 BBR3..."
 bash <(curl -L -s https://raw.githubusercontent.com/teddysun/across/master/bbr.sh) <<< "2"
 
-# -------------------------------
-# 3. 安装 net-tools
-# -------------------------------
-echo "[4/10] 安装 net-tools..."
-apt install -y net-tools
+echo "✔ BBR3 已启用"
 
-# -------------------------------
-# 4. 防火墙 UFW
-# -------------------------------
-echo "[5/10] 配置 UFW..."
+# ---------------------------
+# 7. 防火墙配置
+# ---------------------------
+echo "🚀 配置 UFW 防火墙..."
 apt update -y
 apt install -y ufw
 
@@ -48,81 +92,63 @@ ufw allow 22/tcp
 ufw allow 443/tcp
 ufw --force enable
 
-# -------------------------------
-# 5. 文件句柄优化
-# -------------------------------
-echo "[6/10] 优化文件句柄..."
-cat << EOF | sudo tee /etc/security/limits.conf >/dev/null
+echo "✔ 防火墙已配置（仅开放 22 / 443）"
+
+# ---------------------------
+# 8. 系统文件数优化
+# ---------------------------
+cat << EOF >/etc/security/limits.conf
 * soft nofile 512000
 * hard nofile 512000
 root soft nofile 512000
 root hard nofile 512000
 EOF
 
-echo "fs.file-max = 1024000" | sudo tee -a /etc/sysctl.conf >/dev/null
+echo "fs.file-max = 1024000" >> /etc/sysctl.conf
 
-# -------------------------------
-# 6. sysctl 内核优化
-# -------------------------------
-echo "[7/10] 应用 sysctl 网络优化..."
+echo "✔ 文件句柄限制已优化"
 
-cat << 'EOF' | sudo tee -a /etc/sysctl.conf >/dev/null
+# ---------------------------
+# 9. sysctl 网络优化（Reality 最佳参数）
+# ---------------------------
+cat << 'EOF' >> /etc/sysctl.conf
 
-# ========== Reality 网络最优参数 ==========
+# --------- Reality 最优参数 ----------
 fs.file-max = 1024000
-
-# BBR
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
-
-# TCP 内核优化
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_timestamps = 0
 net.ipv4.tcp_sack = 1
 net.ipv4.tcp_window_scaling = 1
-
-# TCP Buffer
 net.core.rmem_max=26214400
 net.core.wmem_max=26214400
 net.ipv4.tcp_rmem=4096 87380 6291456
 net.ipv4.tcp_wmem=4096 65536 6291456
-
-# Fastopen
 net.ipv4.tcp_fastopen = 3
-
-# IPv6 不禁用，只关闭 RA
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
-
+# --------------------------------------
 EOF
 
-sudo sysctl -p
+sysctl -p
 
-# -------------------------------
-# 7. 自动生成 shortId
-# -------------------------------
-echo "[8/10] 自动生成 shortId..."
+echo "✔ sysctl 优化已完成"
 
+# ---------------------------
+# 10. 自动生成新的 shortId
+# ---------------------------
 SHORTID=$(openssl rand -hex 4)
-CONFIG="/usr/local/etc/xray/config.json"
 
 sed -i "s/\"shortIds\": \[.*/\"shortIds\": [\"$SHORTID\"],/g" $CONFIG
-
 systemctl restart xray
 
-echo "新 shortId: $SHORTID"
+echo "✔ 新 shortId 已应用：$SHORTID"
 
-# -------------------------------
-# 8. Reality 回源检测
-# -------------------------------
-echo "[9/10] 检查伪装回源..."
-
-curl -I https://learn.microsoft.com -m 5 || true
-
-# -------------------------------
-# 9. 自动 MTU 检测
-# -------------------------------
-echo "[10/10] 自动检测最佳 MTU..."
+# ---------------------------
+# 11. 自动检测最佳 MTU
+# ---------------------------
+echo "📡 正在自动检测最佳 MTU..."
 
 best=0
 for mtu in $(seq 1500 -1 1200); do
@@ -132,20 +158,39 @@ for mtu in $(seq 1500 -1 1200); do
     fi
 done
 
-if [ "$best" -ne 0 ]; then
-    echo "最佳 MTU = $best"
-    ip link set mtu $best dev eth0 || true
+if [ "$best" -eq 0 ]; then
+    best=1400
 fi
 
-# -------------------------------
-# 完成
-# -------------------------------
-echo "======================================="
-echo " 🎉 VLESS-Reality 安装 + 优化 完成！"
-echo "======================================="
-echo "shortId：$SHORTID"
-echo "MTU：$best"
+ip link set mtu $best dev "$DEV"
+
+echo "✔ 最佳 MTU 已应用：$best"
+
+# ---------------------------
+# 12. 生成 VLESS Reality 链接
+# ---------------------------
+DOMAIN=$SNI
+PORT=443
+
+LINK="vless://$UUID@$DOMAIN:$PORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB_KEY&sid=$SHORTID&type=tcp&flow=xtls-rprx-vision#Reality-auto"
+
+# ---------------------------
+# 13. 最终输出
+# ---------------------------
+clear
+echo "============================================="
+echo "   🎉 Reality 安装成功（全自动模式）"
+echo "============================================="
 echo ""
-echo "建议执行："
-echo "systemctl status xray --no-pager"
-echo "======================================="
+echo "🔑 UUID:        $UUID"
+echo "🔐 PublicKey:   $PUB_KEY"
+echo "🆔 shortId:     $SHORTID"
+echo "🌐 伪装域名:     $DOMAIN"
+echo "🔧 MTU:          $best"
+echo ""
+echo "📎 客户端链接："
+echo "$LINK"
+echo ""
+echo "============================================="
+echo "你现在可以复制上面的 VLESS 节点使用。"
+echo "============================================="
