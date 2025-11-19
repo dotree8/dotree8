@@ -1,3 +1,7 @@
+# 📘 **Reality 一键安装脚本 - README（专业 GitHub 版）**
+
+下面是最终成品：
+
 ---
 
 ````markdown
